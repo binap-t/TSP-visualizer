@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>2‑D TSP Visualizer — SA / GA / BS</title>
+<style>
+ body{font-family:Arial,Helvetica,sans-serif;margin:20px;}
+ textarea{width:100%;box-sizing:border-box;margin-bottom:10px;font-family:monospace;}
+ #canvas{border:1px solid #444;margin-top:10px;background:#fafafa;}
+ button{margin-right:6px;}
+ input[type=text], input[type=number]{width:110px;margin:0 8px 0 6px;}
+ .row{margin:6px 0;}
+ #controls{margin-top:8px;display:flex;align-items:center;flex-wrap:wrap;gap:8px;}
+ #seekLbl{margin:0 6px;}
+ #speedLbl{margin-left:6px;}
+ details{margin:10px 0;}
+ details > summary{cursor:pointer;font-weight:600;}
+ details > div{margin:8px 0 0 0;color:#333;}
+ .algo-list{margin:6px 0 0 18px;}
+ .algo-list li{margin:3px 0;}
+</style>
+</head>
+<body>
+<h2>📍 2‑D TSP Visualizer — SA / GA / BS</h2>
+
+<details>
+  <summary>① 問題設定</summary>
+  <div>
+    <p>平面上の <strong>N</strong> 個の都市（座標は入力または乱数生成）に対して、各都市を一度ずつ訪れて出発点へ戻る巡回路（ツアー）の総距離を最小化する問題です。距離はユークリッド距離、可視化は入力欄の各行を1解として扱います。</p>
+    <p>行が <em>N</em> 頂点に満たない場合は未完の部分経路として<strong>緑</strong>で描画（最後から最初へは戻りません）。重複頂点がある行はステータスに注意を表示します。</p>
+  </div>
+</details>
+
+<details>
+  <summary>② 各アルゴリズムの説明</summary>
+  <div>
+    <ul class="algo-list">
+      <li><strong>SA（Simulated Annealing）</strong>：温度 <em>T</em> を徐々に下げながら、区間反転に近い遷移を提案し、悪化も確率 <code>exp(-Δ/T)</code> で受容。局所解からの脱出を狙い最短巡回を探索します。</li>
+      <li><strong>GA（Genetic Algorithm）</strong>：母集団からトーナメント選択で親を選び、Order Crossover で子を生成。突然変異（swap）とエリート保存で世代交代し、最良ツアーを改善します。</li>
+      <li><strong>BS（Beam Search）</strong>：始点0から拡張。各ステップで幅 <em>W</em>（Width）の上位部分解だけを保持し、各部分解から未訪問頂点への1手拡張を全列挙→累積距離が小さい上位 <em>W</em> を次へ繰り越します。</li>
+    </ul>
+  </div>
+</details>
+
+<div id="topControls">
+  <div class="row">
+    <label>Seed: <input type="number" id="seed" value="0" step="1"></label>
+    <label>N: <input type="number" id="nCities" value="40" min="2" step="1"></label>
+    <button id="gen">Generate Cities</button>
+  </div>
+  <div class="row">
+    <label>Steps: <input type="number" id="saSteps" min="1"></label>
+    <button id="runSA">Run SA</button>
+  </div>
+  <div class="row">
+    <label>PopSize: <input type="number" id="gaPop" min="2"></label>
+    <label>Generations: <input type="number" id="gaGen" min="1"></label>
+    <button id="runGA">Run GA</button>
+  </div>
+  <div class="row">
+    <label>Width: <input type="number" id="beamW" min="1"></label>
+    <button id="runBeam">Run BS</button>
+  </div>
+</div>
+
+<label style="font-weight:bold">City coordinates</label>
+<textarea id="instance" rows="12"></textarea>
+
+<label style="font-weight:bold">Tour solutions</label>
+<textarea id="solution" rows="6"></textarea>
+
+<div id="controls">
+  <button id="prev">◀ Prev</button>
+  <input type="range" id="seek" min="1" value="1" style="flex:1;" hidden>
+  <span id="seekLbl" hidden>1/1</span>
+  <button id="next">Next ▶</button>
+  <button id="play">▶ Play</button>
+  <label id="speedLbl">Play Speed (sec/step): 
+    <input type="range" id="speed" min="0" max="6" value="3" step="1">
+    <span id="speedVal">0.1 s/step</span>
+  </label>
+</div>
+
+<p id="status" style="font-size:1.1em;font-weight:bold;"></p>
+<canvas id="canvas" width="800" height="800"></canvas>
+
+<script>
+//=================== state & defaults =============
+let N = 40;
+const DEFAULTS = {
+  saSteps: 5000,
+  gaPop: 120,
+  gaGen: 400,
+  beamW: 20,
+  T0: 1000,
+  Tend: 1e-3
+};
+
+// Log-scale speeds (seconds per step)
+const SPEEDS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0];
+
+//=================== RNG helpers =================
+function mulberry32(a){return function(){var t=a+=0x6D2B79F5;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296;}}
+function randInt(rng,min,max){return Math.floor(rng()*(max-min+1))+min;}
+
+//=================== globals ======================
+let cities=[], solutionsArr=[], currentIdx=0, playTimer=null;
+
+//=================== city generation ==============
+function generateCities(){
+  const seedNum = parseInt(document.getElementById("seed").value);
+  const nInput = parseInt(document.getElementById("nCities").value);
+  N = Number.isFinite(nInput) && nInput>=2 ? nInput : N;
+  document.getElementById("nCities").value = N;
+  const seed = Number.isFinite(seedNum) ? seedNum : Math.floor(Math.random()*2**32);
+  const rng=mulberry32(seed);
+  cities=[];
+  for(let i=0;i<N;i++){
+    cities.push({x:50+randInt(rng,0,700), y:50+randInt(rng,0,700)});
+  }
+  const instTxt=[N.toString()].concat(cities.map(p=>p.x+" "+p.y)).join("\n");
+  document.getElementById("instance").value=instTxt;
+
+  const tour=[...Array(N).keys()];
+  for(let i=N-1;i>0;i--){const j=randInt(rng,0,i);[tour[i],tour[j]]=[tour[j],tour[i]];}
+  document.getElementById("solution").value=tour.join(" ");
+}
+
+//=================== parsing ======================
+function parseInstance(txt){
+  const lines=txt.replace(/\r/g,"").trim().split(/\n+/).filter(l=>l!=="");
+  if(lines.length<1) return [];
+  const n=parseInt(lines[0].trim(),10);
+  if(!Number.isFinite(n) || n<2){alert("先頭行に N(>=2) を書いてください");return [];}
+  if(lines.length!==n+1){alert(`座標行数が不足/過多です（期待: ${n} 行）`);return [];}
+  const pts=[];
+  for(let i=1;i<=n;i++){
+    const parts=lines[i].trim().split(/\s+/);
+    if(parts.length<2){alert("座標行の形式が不正です");return [];}
+    const x=Number(parts[0]), y=Number(parts[1]);
+    if(!(Number.isFinite(x)&&Number.isFinite(y))){alert("座標に数値以外が含まれています");return [];}
+    pts.push({x,y});
+  }
+  // adopt N from instance
+  N = n;
+  document.getElementById("nCities").value = N;
+  return pts;
+}
+function parseSolutions(text){
+  const lines = text.replace(/\r/g,"").split(/\n/);
+  const out = [];
+  for(const line of lines){
+    const trimmed = line.trim();
+    if(!trimmed) continue;
+    const arr = trimmed.replace(/,/g," ").split(/\s+/).map(Number);
+    const ok = arr.length>=1 && arr.length<=N && arr.every(v=>Number.isInteger(v)&&v>=0&&v<N);
+    if(ok) out.push(arr.slice());
+  }
+  return out;
+}
+
+//=================== distance & drawing ===========
+function dist(a,b){const dx=a.x-b.x,dy=a.y-b.y;return Math.hypot(dx,dy);}
+function pathLength(order, closed){
+  if(!order || order.length===0) return 0;
+  let len=0;
+  for(let i=0;i<order.length-1;i++){
+    const a=cities[order[i]], b=cities[order[i+1]];
+    len+=dist(a,b);
+  }
+  if(closed && order.length>1){
+    const a=cities[order[order.length-1]], b=cities[order[0]];
+    len+=dist(a,b);
+  }
+  return len;
+}
+function draw(order, closed){
+  const canvas=document.getElementById("canvas");
+  const ctx=canvas.getContext("2d");
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!order||order.length===0) return;
+
+  ctx.lineWidth=2; ctx.strokeStyle = closed ? "#0066ff" : "#008a00";
+  ctx.beginPath();
+  const start=cities[order[0]];
+  ctx.moveTo(start.x,start.y);
+  for(let i=1;i<order.length;i++){const p=cities[order[i]];ctx.lineTo(p.x,p.y);}
+  if(closed && order.length>1){ ctx.lineTo(start.x,start.y); }
+  ctx.stroke();
+
+  ctx.fillStyle="#ff6600";
+  for(const p of cities){ctx.beginPath();ctx.arc(p.x,p.y,4,0,Math.PI*2);ctx.fill();}
+
+  ctx.fillStyle="#000"; ctx.font="11px monospace";
+  for(let i=0;i<order.length;i++){const p=cities[order[i]];ctx.fillText(order[i],p.x+5,p.y-5);}
+}
+
+//=================== helpers ======================
+function hasDuplicates(arr){
+  const seen=new Set();
+  for(const v of arr){ if(seen.has(v)) return true; seen.add(v); }
+  return false;
+}
+
+//=================== UI flow ======================
+function updateSeekUI(){
+  const seek=document.getElementById("seek");
+  const lbl=document.getElementById("seekLbl");
+  if(solutionsArr.length<=1){seek.hidden=true;lbl.hidden=true;}
+  else{seek.hidden=false;lbl.hidden=false;seek.max=solutionsArr.length;seek.value=currentIdx+1;lbl.textContent=`${currentIdx+1}/${solutionsArr.length}`;}
+}
+function composeStatus(order, complete, len){
+  const notes=[];
+  if(!complete) notes.push(`incomplete ${order.length}/${N}`);
+  if(hasDuplicates(order)) notes.push("has duplicates");
+  const noteStr = notes.length? " ("+notes.join("; ")+")" : "";
+  return `Step ${currentIdx+1}/${solutionsArr.length} — Tour length: ${len}${noteStr}`;
+}
+function load(idx){
+  if(!cities.length||solutionsArr.length===0) return;
+  currentIdx=(idx+solutionsArr.length)%solutionsArr.length;
+  const order=solutionsArr[currentIdx];
+  const complete = (order.length===N);
+  const len = pathLength(order, complete).toFixed(2);
+  document.getElementById("status").textContent=composeStatus(order, complete, len);
+  draw(order, complete);
+  updateSeekUI();
+}
+
+function stopPlay(){
+  if(playTimer){clearInterval(playTimer);playTimer=null;document.getElementById("play").textContent="▶ Play";}
+}
+function startPlay(){
+  if(solutionsArr.length<=1) return;
+  const idx = +document.getElementById("speed").value; // 0..6
+  const perStepMs = Math.max(5, SPEEDS[idx]*1000);
+  playTimer=setInterval(()=>load(currentIdx+1), perStepMs);
+  document.getElementById("play").textContent="⏸ Pause";
+  updateSpeedLabel();
+}
+function updateSpeedLabel(){
+  const idx = +document.getElementById("speed").value;
+  document.getElementById("speedVal").textContent = `${SPEEDS[idx]} s/step`;
+}
+
+// Make the textareas the single source of truth
+function writeSolutionsToTextarea(record){
+  const text = record.map(arr=>arr.join(" ")).join("\n");
+  document.getElementById("solution").value = text;
+}
+function syncFromSolutionField(resetIdx=true){
+  const parsedCities = parseInstance(document.getElementById("instance").value);
+  if(parsedCities.length){ cities = parsedCities; }
+  solutionsArr = parseSolutions(document.getElementById("solution").value);
+  if(!solutionsArr.length){ document.getElementById("status").textContent=""; updateSeekUI(); draw(); return; }
+  if(resetIdx) currentIdx = 0;
+  if(currentIdx >= solutionsArr.length) currentIdx = solutionsArr.length-1;
+  load(currentIdx);
+}
+
+//================== SA / GA / BS ==================
+function runSA(){
+  if(!cities.length){alert("先に都市を生成するか City coordinates を入力してください");return;}
+  const stepsInput = parseInt(document.getElementById("saSteps").value);
+  const steps = Number.isFinite(stepsInput)&&stepsInput>0 ? stepsInput : DEFAULTS.saSteps;
+
+  let order=[...Array(N).keys()];
+  let bestLen=pathLength(order,true);
+
+  const T0 = DEFAULTS.T0, Tend = DEFAULTS.Tend;
+  const rng=mulberry32(1234567);
+
+  const record=[order.slice()];
+  let currLen=bestLen;
+
+  for(let iter=1;iter<=steps;){
+    const i=randInt(rng,0,N-1), j=randInt(rng,0,N-1);
+    if(i===j) continue;
+    const a=Math.min(i,j), b=Math.max(i,j);
+    const aPrev=order[(a-1+N)%N], aCity=order[a], bCity=order[b], bNext=order[(b+1)%N];
+    const delta =  dist(cities[aPrev],cities[bCity]) + dist(cities[aCity],cities[bNext])
+                 - dist(cities[aPrev],cities[aCity]) - dist(cities[bCity],cities[bNext]);
+
+    const T = T0 * Math.pow(Tend/T0, iter/steps);
+    if(delta<0 || Math.exp(-delta/T) > Math.random()){
+      for(let k=0;k<(b-a+1)/2;k++) [order[a+k],order[b-k]]=[order[b-k],order[a+k]];
+      currLen += delta;
+      if(currLen<bestLen){bestLen=currLen;}
+    }
+    record.push(order.slice());
+    iter++;
+  }
+
+  writeSolutionsToTextarea(record);
+  syncFromSolutionField(true);
+}
+
+function shuffle(arr,rng){for(let i=arr.length-1;i>0;i--){const j=randInt(rng,0,i);[arr[i],arr[j]]=[arr[j],arr[i]];}}
+function orderCrossover(p1,p2,rng){
+  const n=p1.length;
+  const child=new Array(n).fill(-1);
+  const a=randInt(rng,0,n-2), b=randInt(rng,a+1,n-1);
+  for(let i=a;i<=b;i++) child[i]=p1[i];
+  let idx=(b+1)%n;
+  for(let k=0;k<n;k++){
+    const gene=p2[(b+1+k)%n];
+    if(!child.includes(gene)){child[idx]=gene; idx=(idx+1)%n;}
+  }
+  return child;
+}
+function mutateSwap(order,rng){const i=randInt(rng,0,order.length-1), j=randInt(rng,0,order.length-1);[order[i],order[j]]=[order[j],order[i]];}
+function runGA(){
+  if(!cities.length){alert("先に都市を生成するか City coordinates を入力してください");return;}
+  const rng=mulberry32(7654321);
+  const popInput = parseInt(document.getElementById("gaPop").value);
+  const genInput = parseInt(document.getElementById("gaGen").value);
+  const popSize = Number.isFinite(popInput)&&popInput>=2 ? popInput : DEFAULTS.gaPop;
+  const generations = Number.isFinite(genInput)&&genInput>=1 ? genInput : DEFAULTS.gaGen;
+  const mutationProb=0.2;
+
+  let population=[];
+  for(let i=0;i<popSize;i++){const t=[...Array(N).keys()];shuffle(t,rng);population.push(t);}
+
+  const record=[];
+  for(let gen=0;gen<generations;gen++){
+    const scored=population.map(t=>({tour:t,len:pathLength(t,true)})).sort((a,b)=>a.len-b.len);
+    const elite=scored[0].tour.slice();
+    record.push(elite);
+
+    const next=[elite.slice()];
+    const tournament=(k)=>{
+      let best=null;
+      for(let i=0;i<k;i++){
+        const cand=scored[randInt(rng,0,scored.length-1)];
+        if(best===null||cand.len<best.len) best=cand;
+      }
+      return best.tour;
+    };
+
+    while(next.length<popSize){
+      const p1=tournament(5), p2=tournament(5);
+      let child=orderCrossover(p1,p2,rng);
+      if(Math.random()<mutationProb) mutateSwap(child,rng);
+      next.push(child);
+    }
+    population=next;
+  }
+
+  writeSolutionsToTextarea(record);
+  syncFromSolutionField(true);
+}
+
+function runBeam(){
+  if(!cities.length){alert("先に都市を生成するか City coordinates を入力してください");return;}
+  const wInput = parseInt(document.getElementById("beamW").value);
+  const W = Number.isFinite(wInput)&&wInput>=1 ? wInput : DEFAULTS.beamW;
+
+  let beam=[{path:[0], cost:0}]; // start at 0
+  const record=[];
+
+  for(let step=0;step<N;step++){
+    const bestPath=beam[0].path.slice();
+    record.push(bestPath);
+
+    if(step===N-1) break;
+
+    const candidates=[];
+    beam.forEach(state=>{
+      const used=new Set(state.path);
+      const last=state.path[state.path.length-1];
+      for(let v=0;v<N;v++){
+        if(!used.has(v)){
+          const newCost=state.cost + dist(cities[last], cities[v]);
+          const newPath=state.path.concat(v);
+          candidates.push({path:newPath, cost:newCost});
+        }
+      }
+    });
+    candidates.sort((a,b)=>a.cost-b.cost);
+    beam=candidates.slice(0,W);
+  }
+
+  writeSolutionsToTextarea(record);
+  syncFromSolutionField(true);
+}
+
+//================== events ========================
+document.getElementById("gen").onclick = ()=>{
+  stopPlay();
+  generateCities();
+  syncFromSolutionField(true);
+};
+
+document.getElementById("runSA").onclick=()=>{stopPlay(); runSA();};
+document.getElementById("runGA").onclick=()=>{stopPlay(); runGA();};
+document.getElementById("runBeam").onclick=()=>{stopPlay(); runBeam();};
+
+document.getElementById("prev").onclick=()=>{stopPlay(); if(solutionsArr.length) load(currentIdx-1);};
+document.getElementById("next").onclick=()=>{stopPlay(); if(solutionsArr.length) load(currentIdx+1);};
+document.getElementById("seek").oninput=e=>{stopPlay(); load(+e.target.value-1);};
+
+document.getElementById("play").onclick=()=>{
+  if(!playTimer){ startPlay(); } else { stopPlay(); }
+};
+document.getElementById("speed").oninput=e=>{
+  updateSpeedLabel();
+  if(playTimer){ stopPlay(); startPlay(); }
+};
+
+// Textareas are the single source of truth
+document.getElementById("solution").addEventListener("input", ()=>{
+  stopPlay();
+  syncFromSolutionField(false);
+});
+document.getElementById("instance").addEventListener("input", ()=>{
+  stopPlay();
+  const parsedCities = parseInstance(document.getElementById("instance").value);
+  if(parsedCities.length){ cities = parsedCities; }
+  syncFromSolutionField(false);
+});
+
+//================== bootstrap =====================
+function initDefaults(){
+  document.getElementById("saSteps").value = DEFAULTS.saSteps;
+  document.getElementById("gaPop").value   = DEFAULTS.gaPop;
+  document.getElementById("gaGen").value   = DEFAULTS.gaGen;
+  document.getElementById("beamW").value   = DEFAULTS.beamW;
+  updateSpeedLabel();
+}
+initDefaults();
+generateCities();
+syncFromSolutionField(true);
+</script>
+</body>
+</html>

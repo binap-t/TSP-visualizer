@@ -21,32 +21,26 @@
  .hint{color:#555;font-size:0.9em;margin:4px 0 8px;}
  code.inline{background:#f1f1f1;padding:2px 4px;border-radius:4px;}
  .small{font-size:12px;color:#555;margin-left:8px;}
- #gifRow{margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
- #gifStatus{font-size:12px;color:#555;}
 </style>
 </head>
 <body>
 <h2>📍 2-D TSP Visualizer — SA / GA / BS <small>ver15</small></h2>
 
-<details open>
+<details>
   <summary>① 概要</summary>
   <div>
-    <p>平面上の <strong>N</strong> 個の都市（座標は入力または乱数生成）に対して、各都市を一度ずつ訪れて出発点へ戻る巡回路（ツアー）の総距離を最小化します。距離はユークリッド距離。入力欄の各行は 1 解です。</p>
-    <p>各行は <strong>JSON</strong>（<code class="inline">{ "name": "step0001", "solution": "0 3 1 2 ..." }</code>）または <strong>空白区切りの数列</strong>でも可。<code>solution</code> は空白区切りの文字列 / 配列のどちらでもOK。</p>
+    <p>平面上の <strong>N</strong> 個の都市（座標は入力または乱数生成）に対して、各都市を一度ずつ訪れて出発点へ戻る巡回路（ツアー）の総距離を最小化します。距離はユークリッド距離。</p>
+    <p>各行は <strong>JSON</strong>（<code class="inline">{ "name": "step0001", "solution": "0 3 1 2 ..." }</code>）で、各行が1つの解を表します。<code>solution</code> は空白区切りの文字列で入力してください。</p>
   </div>
 </details>
 
 <details>
-  <summary>② 主な機能追加（ver15）</summary>
+  <summary>② 各アルゴリズムの説明</summary>
   <div>
     <ul class="algo-list">
-      <li><strong>Play 非ループ</strong>（前版から継続）：最後で停止。</li>
-      <li><strong>GIF 改善</strong>：
-        <ul>
-          <li>フレーム数が 500 を超える場合は<strong>等間隔サンプリングで最大 500 フレーム</strong>に集約（<em>最後のフレームは必ず含む</em>）。</li>
-          <li>GIFエンコーダを見直し：<strong>逐次エンコード</strong>で大容量対策、<strong>Disposal Method=2</strong>（背景クリア）で「砂嵐」化を抑制。</li>
-        </ul>
-      </li>
+      <li><strong>SA（Simulated Annealing）</strong>：温度 T を徐々に下げながら、区間反転に近い遷移を提案し、悪化も確率 exp(-Δ/T) で受容。局所解からの脱出を狙い最短巡回を探索します。</li>
+      <li><strong>GA（Genetic Algorithm）</strong>：母集団からトーナメント選択で親を選び、Order Crossover で子を生成。突然変異（swap）とエリート保存で世代交代し、最良ツアーを改善します。</li>
+      <li><strong>BS（Beam Search）</strong>：始点0から拡張。各ステップで幅 W（Width）の上位部分解だけを保持し、各部分解から未訪問頂点への1手拡張を全列挙→累積距離が小さい上位 W を次へ繰り越します。</li>
     </ul>
   </div>
 </details>
@@ -96,8 +90,7 @@
 <div class="hint">
 例:
 <pre style="margin:6px 0;background:#f8f8f8;padding:8px;border-radius:6px;">
-{ "name": "step0001", "solution": "0 3 1 2 4" }
-{ "name": "best_SA", "solution": [0,3,1,2,4] }
+{ "name": "MyBestSolution", "solution": "0 3 1 2 4" }
 </pre>
 </div>
 <textarea id="solution" rows="8"></textarea>
@@ -114,11 +107,6 @@
   </label>
 </div>
 
-<div id="gifRow">
-  <button id="saveGif">💾 Save GIF</button>
-  <label>GIF fps: <input type="number" id="gifFps" value="10" min="1" max="60" step="1"></label>
-  <span id="gifStatus"></span>
-</div>
 
 <p id="status" style="font-size:1.1em;font-weight:bold;"></p>
 <canvas id="canvas" width="800" height="800"></canvas>
@@ -311,7 +299,8 @@ function draw(order, closed){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   if(!order||order.length===0) return;
 
-  ctx.lineWidth=2; ctx.strokeStyle = closed ? "#0066ff" : "#008a00";
+  const hasDup = hasDuplicates(order);
+  ctx.lineWidth=2; ctx.strokeStyle = (closed && !hasDup) ? "#0066ff" : "#008a00";
   ctx.beginPath();
   const start=cities[order[0]];
   ctx.moveTo(start.x,start.y);
@@ -563,219 +552,6 @@ function runBeam(){
   syncFromSolutionField(true);
 }
 
-//================== GIF export (improved) =========
-function buildPalette256(){
-  // 8x8x4 cube = 256 colors
-  const pal = new Uint8Array(256*3);
-  let idx=0;
-  for(let r=0;r<8;r++){
-    for(let g=0; g<8; g++){
-      for(let b=0; b<4; b++){
-        pal[idx++] = Math.round(r*255/7);
-        pal[idx++] = Math.round(g*255/7);
-        pal[idx++] = Math.round(b*255/3);
-      }
-    }
-  }
-  return pal;
-}
-function rgbToIndex(r,g,b){
-  const ri = r>>>5; // 0..7
-  const gi = g>>>5; // 0..7
-  const bi = b>>>6; // 0..3
-  return (ri<<5) | (gi<<2) | bi;
-}
-function imageDataToIndexed(img){
-  const {data, width, height} = img;
-  const out = new Uint8Array(width*height);
-  let p=0;
-  for(let i=0;i<data.length;i+=4){
-    out[p++] = rgbToIndex(data[i], data[i+1], data[i+2]);
-  }
-  return out;
-}
-function writeShortLE(arr, v){ arr.push(v & 0xFF, (v>>8)&0xFF); }
-function lzwEncode(minCodeSize, indices){
-  const CLEAR = 1<<minCodeSize;
-  const EOI = CLEAR + 1;
-  let codeSize = minCodeSize + 1;
-  let nextCode = EOI + 1;
-  const MAX_CODE = 4095;
-
-  const outputBytes = [];
-  let curByte = 0;
-  let bitPos = 0;
-  function output(code){
-    curByte |= (code << bitPos);
-    bitPos += codeSize;
-    while(bitPos >= 8){
-      outputBytes.push(curByte & 0xFF);
-      curByte >>= 8;
-      bitPos -= 8;
-    }
-  }
-  function flush(){
-    if(bitPos>0){
-      outputBytes.push(curByte & 0xFF);
-      curByte = 0; bitPos=0;
-    }
-  }
-
-  const dict = new Map();
-  function resetDict(){
-    dict.clear();
-    codeSize = minCodeSize + 1;
-    nextCode = EOI + 1;
-  }
-
-  output(CLEAR);
-
-  let prev = indices[0];
-  for(let i=1;i<indices.length;i++){
-    const k = indices[i];
-    const key = (prev<<8) | k;
-    if(dict.has(key)){
-      prev = dict.get(key);
-    }else{
-      output(prev);
-      if(nextCode <= MAX_CODE){
-        dict.set(key, nextCode++);
-        if(nextCode === (1<<codeSize) && codeSize<12){ codeSize++; }
-      }else{
-        output(CLEAR);
-        resetDict();
-      }
-      prev = k;
-    }
-  }
-  output(prev);
-  output(EOI);
-  flush();
-
-  // sub-blocks
-  const blocks = [];
-  for(let i=0;i<outputBytes.length; i+=255){
-    const size = Math.min(255, outputBytes.length - i);
-    blocks.push(size, ...outputBytes.slice(i, i+size));
-  }
-  blocks.push(0); // terminator
-  return new Uint8Array(blocks);
-}
-
-function GifWriter(width, height, delayCS){
-  this.bytes = [];
-  this.width = width;
-  this.height = height;
-  this.delayCS = delayCS;
-  this.pal = buildPalette256();
-  // Header + LSD + GCT
-  const b = this.bytes;
-  b.push(0x47,0x49,0x46,0x38,0x39,0x61); // GIF89a
-  writeShortLE(b, width);
-  writeShortLE(b, height);
-  const gctFlag = 1<<7;
-  const colorRes = 7<<4;
-  const sortFlag = 0<<3;
-  const gctSize = 7; // 256
-  b.push(gctFlag | colorRes | sortFlag | gctSize);
-  b.push(0); // bg index
-  b.push(0); // aspect
-  for(let i=0;i<this.pal.length;i++) b.push(this.pal[i]);
-}
-GifWriter.prototype.addFrame = function(indices){
-  const b = this.bytes;
-  // Graphic Control Extension (disposal=2: restore to background)
-  b.push(0x21, 0xF9, 0x04);
-  const disposal2 = 0x08; // bits 2..4 = 2
-  const packed = disposal2; // no transparency
-  b.push(packed);
-  writeShortLE(b, this.delayCS);
-  b.push(0x00); // transparent color idx
-  b.push(0x00); // terminator
-
-  // Image Descriptor
-  b.push(0x2C);
-  writeShortLE(b, 0); writeShortLE(b, 0);
-  writeShortLE(b, this.width); writeShortLE(b, this.height);
-  b.push(0x00); // no local color table
-
-  // Image Data
-  const minCodeSize = 8;
-  b.push(minCodeSize);
-  const lzw = lzwEncode(minCodeSize, indices);
-  for(let i=0;i<lzw.length;i++) b.push(lzw[i]);
-};
-GifWriter.prototype.finish = function(){
-  this.bytes.push(0x3B); // trailer
-  return new Uint8Array(this.bytes);
-};
-
-function chooseFrameIndices(total, cap){
-  if(total <= cap){
-    return Array.from({length: total}, (_,i)=>i);
-  }
-  const idx=[];
-  const step = (total-1)/(cap-1);
-  for(let k=0;k<cap-1;k++){
-    const v = Math.floor(k*step);
-    if(idx.length===0 || v!==idx[idx.length-1]) idx.push(v);
-  }
-  if(idx[idx.length-1] !== total-1) idx.push(total-1);
-  return idx;
-}
-
-async function saveGif(){
-  if(!cities.length || !solutionsArr.length){ alert("まずインスタンスと解を用意してください"); return; }
-  stopPlay();
-  const fps = Math.max(1, Math.min(60, parseInt(document.getElementById("gifFps").value)||10));
-  const delayCS = Math.round(100 / fps);
-  const src = document.getElementById("canvas");
-  const statusEl = document.getElementById("status");
-
-  // Compose status + canvas into one offscreen canvas
-  const padTop = 26;
-  const w = src.width, h = src.height + padTop;
-  const off = document.createElement("canvas");
-  off.width = w; off.height = h;
-  const octx = off.getContext("2d");
-
-  const total = solutionsArr.length;
-  const cap = 500;
-  const indicesList = chooseFrameIndices(total, cap);
-  const writer = new GifWriter(w, h, delayCS);
-
-  document.getElementById("gifStatus").textContent = `Encoding GIF: 0/${indicesList.length} frames...`;
-
-  for(let ii=0; ii<indicesList.length; ii++){
-    const i = indicesList[ii];
-    load(i);
-    // compose
-    octx.fillStyle = "#ffffff";
-    octx.fillRect(0,0,w,h);
-    octx.fillStyle = "#000000";
-    octx.font = "bold 14px monospace";
-    octx.textBaseline = "top";
-    octx.fillText(statusEl.textContent, 6, 6);
-    octx.drawImage(src, 0, padTop);
-    const img = octx.getImageData(0,0,w,h);
-    const idxs = imageDataToIndexed(img);
-    writer.addFrame(idxs);
-    if(ii%20===0) await new Promise(r=>setTimeout(r,0));
-    if(ii%10===0) document.getElementById("gifStatus").textContent = `Encoding GIF: ${ii+1}/${indicesList.length} frames...`;
-  }
-
-  const bytes = writer.finish();
-  const blob = new Blob([bytes], {type:"image/gif"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  const ts = new Date().toISOString().replace(/[:.]/g,"-");
-  a.href = url;
-  a.download = `tsp_visualizer_${ts}.gif`;
-  a.click();
-  URL.revokeObjectURL(url);
-  document.getElementById("gifStatus").textContent = `Saved ${indicesList.length} frames @${fps}fps (capped at 500)`;
-}
-
 //================== controls/events ===============
 function writeSolutionsToTextarea(record, names){
   const lines = record.map((arr, i)=>{
@@ -814,8 +590,6 @@ document.getElementById("speed").oninput=e=>{
   updateSpeedLabel();
   if(playTimer){ stopPlay(); startPlay(); }
 };
-
-document.getElementById("saveGif").onclick=()=>{ saveGif(); };
 
 document.getElementById("solution").addEventListener("input", ()=>{
   stopPlay();

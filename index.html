@@ -2,7 +2,9 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>2-D TSP Visualizer ver15 — SA / GA / BS (GIF capped & cleaner)</title>
+<meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; worker-src 'self' blob: https://cdn.jsdelivr.net;">
+<title>2-D TSP Visualizer ver17 — SA / GA / BS</title>
 <style>
  body{font-family:Arial,Helvetica,sans-serif;margin:20px;}
  textarea{width:100%;box-sizing:border-box;margin-bottom:10px;font-family:monospace;}
@@ -21,10 +23,15 @@
  .hint{color:#555;font-size:0.9em;margin:4px 0 8px;}
  code.inline{background:#f1f1f1;padding:2px 4px;border-radius:4px;}
  .small{font-size:12px;color:#555;margin-left:8px;}
+ progress{width:100%;height:10px;border:0;background:#eee;border-radius:6px;display:none}
+ progress::-webkit-progress-bar{background:#eee;border-radius:6px}
+ progress::-webkit-progress-value{background:#4caf50;border-radius:6px}
+ progress::-moz-progress-bar{background:#4caf50;border-radius:6px}
+ label.inline{display:inline-flex;align-items:center;gap:6px;margin-right:12px;}
 </style>
 </head>
 <body>
-<h2>📍 2-D TSP Visualizer — SA / GA / BS <small>ver15</small></h2>
+<h2>2-D TSP Visualizer — SA / GA / BS <small>ver17</small></h2>
 
 <details>
   <summary>① 概要</summary>
@@ -107,13 +114,34 @@
   </label>
 </div>
 
+<!-- ★ GIF出力（Playと同じディレイで連続再生を録画） -->
+<div>
+  <div class="row" id="gifControls">
+    <button id="exportGif">💾 Export GIF</button>
+    <label class="inline">Scale
+      <input type="range" id="gifScale" min="0.25" max="1" step="0.05" value="1">
+      <span id="gifScaleVal">1.00×</span>
+    </label>
+    <label class="inline">Loop GIF
+      <input type="checkbox" id="gifLoop" checked>
+    </label>
+    <label class="inline">Hold last (s)
+      <input type="number" id="gifHold" min="0" step="0.1" value="0">
+    </label>
+  </div>
+  <progress id="gifProg" value="0" max="1"></progress>
+</div>
 
 <p id="status" style="font-size:1.1em;font-weight:bold;"></p>
 <canvas id="canvas" width="800" height="800"></canvas>
 
+<!-- アルゴリズム実装（既存） -->
 <script src="algorithms/sa.js"></script>
 <script src="algorithms/bs.js"></script>
 <script src="algorithms/ga.js"></script>
+
+<!-- GIFエンコーダ（ブラウザ用 / WebWorker対応） -->
+<script src="./vendor/gif.js"></script>
 <script>
 //=================== state & defaults =============
 let N = 40;
@@ -363,6 +391,115 @@ document.getElementById("instance").addEventListener("input", ()=>{
   const parsedCities = parseInstance(document.getElementById("instance").value);
   if(parsedCities.length){ cities = parsedCities; }
   syncFromSolutionField(false);
+});
+
+//================== GIF Export ====================
+const GIF_WORKER_URL = './vendor/gif.worker.js';
+
+document.getElementById('gifScale').addEventListener('input', ()=>{
+  document.getElementById('gifScaleVal').textContent =
+    (+document.getElementById('gifScale').value).toFixed(2)+'×';
+});
+
+document.getElementById('exportGif').addEventListener('click', async ()=>{
+  console.log('=== GIF Export Start ===');
+  if(!solutionsArr.length){ alert('解（solutions）がありません'); return; }
+  stopPlay();
+  
+  // ① シークバーを最初のフレーム（0）に戻す
+  load(0);
+
+  const speedIdx = +document.getElementById('speed').value;
+  const perStepMs = Math.max(5, Math.round(SPEEDS[speedIdx]*1000));
+  const loop = document.getElementById('gifLoop').checked;
+  const holdSec = Math.max(0, parseFloat(document.getElementById('gifHold').value)||0);
+  const thin = 1;  // Thin機能を削除、常に全フレーム出力
+  const scale = Math.min(1, Math.max(0.25, parseFloat(document.getElementById('gifScale').value)||1));
+
+  console.log('Settings:', {speedIdx, perStepMs, loop, holdSec, thin, scale});
+
+  const srcCanvas = document.getElementById('canvas');
+  const W = Math.round(srcCanvas.width * scale);
+  const H = Math.round(srcCanvas.height * scale);
+  const off = document.createElement('canvas'); off.width=W; off.height=H;
+  const octx = off.getContext('2d', {willReadFrequently: true});
+
+  const startIdx = 0;  // 常に最初から開始
+  const endIdx = solutionsArr.length - 1;
+  const totalFrames = Math.floor((endIdx - startIdx)/thin) + 1 + (holdSec>0 ? 1 : 0);
+
+  console.log(`Canvas: ${W}x${H}, Frames: ${startIdx} to ${endIdx}, Total: ${totalFrames}`);
+
+  const prog = document.getElementById('gifProg');
+  prog.style.display='block'; prog.value=0; prog.max=1;
+
+  // gif.js によるエンコード（Workerを無効化）
+const gif = new GIF({
+  workers: Math.min(4, navigator.hardwareConcurrency || 2),
+  workerScript: GIF_WORKER_URL,
+  width: W,
+  height: H,
+  quality: 10,                // higher number = faster, bigger file
+  repeat: loop ? 0 : -1
+});
+
+  console.log('GIF object created:', gif);
+
+  gif.on('progress', p => { 
+    console.log(`Progress: ${(p*100).toFixed(1)}%`);
+    prog.value = p; 
+  });
+  
+  gif.on('finished', (blob)=>{
+    console.log('GIF finished, blob size:', blob.size);
+    prog.style.display='none';
+    const a = document.createElement('a');
+    a.download = 'tsp_visualizer.gif';
+    a.href = URL.createObjectURL(blob);
+    console.log('Download link:', a.download);
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+  });
+
+  // 実際のフレーム列（白背景 + ステータス + キャンバス）
+  let frameCount = 0;
+  const statusEl = document.getElementById('status');
+  const textHeight = 30;  // ステータステキスト用の高さ
+  
+  for(let i=startIdx; i<=endIdx; i+=thin){
+    load(i); // 画面にも反映（Playと同じ見た目を確保）
+    
+    // ② 白背景を設定
+    octx.fillStyle = '#FFFFFF';
+    octx.fillRect(0, 0, W, H);
+    
+    // ③ ステップ数とスコアを上部に表記
+    octx.fillStyle = '#000000';
+    octx.font = `${Math.round(14 * scale)}px Arial, sans-serif`;
+    octx.textAlign = 'left';
+    octx.textBaseline = 'top';
+    
+    const statusText = statusEl.textContent;
+    octx.fillText(statusText, 10 * scale, 10 * scale);
+    
+    // キャンバス内容を下に描画（ステータステキスト分下げる）
+    octx.drawImage(srcCanvas, 0, textHeight * scale, W, H - textHeight * scale);
+    
+    gif.addFrame(octx, {copy:true, delay: perStepMs});
+    frameCount++;
+    console.log(`Added frame ${frameCount} (step ${i})`);
+    // UIフリーズ防止
+    await new Promise(r=>setTimeout(r,0));
+  }
+  if(holdSec>0){
+    // 最終コマを長めに保持
+    gif.addFrame(octx, {copy:true, delay: Math.round(holdSec*1000)});
+    frameCount++;
+    console.log(`Added hold frame ${frameCount}`);
+  }
+
+  console.log('Starting render...');
+  gif.render(); // 生成開始
 });
 
 //================== bootstrap =====================

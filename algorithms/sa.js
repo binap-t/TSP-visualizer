@@ -19,9 +19,9 @@ function runSA(){
   const names=[];
 
   record.push(order.slice());
-  names.push(`step${String(1).padStart(4,"0")}`);
+  names.push("initial");
 
-  let currLen=bestLen, stepNo=1;
+  let currLen=bestLen, stepNo=0;
 
   for(let iter=1;iter<=steps;){
     const i=randInt(rng,0,N-1), j=randInt(rng,0,N-1);
@@ -37,12 +37,12 @@ function runSA(){
       currLen += delta;
       if(currLen<bestLen){bestLen=currLen; bestOrder=order.slice();}
     }
+    iter++;
     stepNo++;
     if(stepNo % thin === 0){
       record.push(order.slice());
       names.push(`step${String(stepNo).padStart(4,"0")}`);
     }
-    iter++;
   }
 
   record.push(bestOrder.slice());

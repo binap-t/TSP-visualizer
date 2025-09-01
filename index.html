@@ -39,8 +39,8 @@
   <div>
     <ul class="algo-list">
       <li><strong>SA（Simulated Annealing）</strong>：温度 T を徐々に下げながら、区間反転に近い遷移を提案し、悪化も確率 exp(-Δ/T) で受容。局所解からの脱出を狙い最短巡回を探索します。</li>
-      <li><strong>GA（Genetic Algorithm）</strong>：母集団からトーナメント選択で親を選び、Order Crossover で子を生成。突然変異（swap）とエリート保存で世代交代し、最良ツアーを改善します。</li>
       <li><strong>BS（Beam Search）</strong>：始点0から拡張。各ステップで幅 W（Width）の上位部分解だけを保持し、各部分解から未訪問頂点への1手拡張を全列挙→累積距離が小さい上位 W を次へ繰り越します。</li>
+      <li><strong>GA（Genetic Algorithm）</strong>：母集団からトーナメント選択で親を選び、Order Crossover で子を生成。突然変異（swap）とエリート保存で世代交代し、最良ツアーを改善します。</li>
     </ul>
   </div>
 </details>
@@ -56,13 +56,13 @@
     <button id="runSA">Run SA</button>
   </div>
   <div class="row">
+    <label>Width: <input type="number" id="beamW" min="1"></label>
+    <button id="runBeam">Run BS</button>
+  </div>
+  <div class="row">
     <label>PopSize: <input type="number" id="gaPop" min="2" value="30"></label>
     <label>Generations: <input type="number" id="gaGen" min="1" value="500"></label>
     <button id="runGA">Run GA</button>
-  </div>
-  <div class="row">
-    <label>Width: <input type="number" id="beamW" min="1"></label>
-    <button id="runBeam">Run BS</button>
   </div>
 </div>
 
@@ -73,13 +73,13 @@
     <span class="small">Record every k steps (default: 1 = all)</span>
   </div>
   <div class="row">
+    <label>BS topK: <input type="number" id="bsTopK" placeholder="all" min="1" step="1"></label>
+    <span class="small">Leave blank to output all W beams</span>
+  </div>
+  <div class="row">
     <label>GA thinning (k): <input type="number" id="gaThin" value="1" min="1" step="1"></label>
     <label>GA topK: <input type="number" id="gaTopK" placeholder="all" min="1" step="1"></label>
     <span class="small">Leave topK blank to output all individuals</span>
-  </div>
-  <div class="row">
-    <label>BS topK: <input type="number" id="bsTopK" placeholder="all" min="1" step="1"></label>
-    <span class="small">Leave blank to output all W beams</span>
   </div>
 </details>
 
